@@ -16,9 +16,11 @@ package org.hornetq.core.remoting.impl.netty;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 
 import org.hornetq.api.core.HornetQBuffer;
 import org.hornetq.api.core.HornetQBuffers;
+import org.hornetq.api.core.HornetQIOErrorException;
 import org.hornetq.api.core.HornetQInterruptedException;
 import org.hornetq.api.core.TransportConfiguration;
 import org.hornetq.core.buffers.impl.ChannelBufferWrapper;
@@ -37,7 +39,6 @@ import org.jboss.netty.handler.ssl.SslHandler;
  * @author <a href="mailto:jmesnil@redhat.com">Jeff Mesnil</a>
  * @author <a href="mailto:ataylor@redhat.com">Andy Taylor</a>
  * @author <a href="mailto:tim.fox@jboss.com">Tim Fox</a>
- *
  */
 public class NettyConnection implements Connection
 {
@@ -69,10 +70,10 @@ public class NettyConnection implements Connection
    // Constructors --------------------------------------------------
 
    public NettyConnection(final Map<String, Object> configuration,
-                           final Channel channel,
-                           final ConnectionLifeCycleListener listener,
-                           boolean batchingEnabled,
-                           boolean directDeliver)
+                          final Channel channel,
+                          final ConnectionLifeCycleListener listener,
+                          boolean batchingEnabled,
+                          boolean directDeliver)
    {
       this.configuration = configuration;
 
@@ -116,7 +117,7 @@ public class NettyConnection implements Connection
          return;
       }
 
-      SslHandler sslHandler = (SslHandler)channel.getPipeline().get("ssl");
+      SslHandler sslHandler = (SslHandler) channel.getPipeline().get("ssl");
       if (sslHandler != null)
       {
          try
@@ -192,10 +193,28 @@ public class NettyConnection implements Connection
 
       try
       {
-         writeLock.acquire();
+
+
+         while (!writeLock.tryAcquire(30, TimeUnit.SECONDS))
+         {
+            listener.connectionException(getID(), new HornetQIOErrorException("Connection is blocked forever"));
+            if (closed)
+            {
+               return;
+            }
+            else
+            {
+               throw new IllegalStateException("Cannot unblock write");
+            }
+         }
 
          try
          {
+            if (closed)
+            {
+               return;
+            }
+
             if (batchBuffer == null && batchingEnabled && batched && !flush)
             {
                // Lazily create batch buffer
@@ -293,7 +312,7 @@ public class NettyConnection implements Connection
 
    void fireReady(final boolean ready)
    {
-      for (ReadyListener listener: readyListeners)
+      for (ReadyListener listener : readyListeners)
       {
          listener.readyForWriting(ready);
       }
